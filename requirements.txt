@@ -1,8 +1,5 @@
 fastapi
 uvicorn
-gspread
-oauth2client
+requests
 SpeechRecognition
 pydub
-python-multipart
-requests
