@@ -10,14 +10,12 @@ from pydub import AudioSegment
 
 app = FastAPI(title="Gemach Reisman IVR Server")
 
-# קישור ל-Google Apps Script
 SCRIPT_URL = os.environ.get(
     "SCRIPT_URL", 
     "https://script.google.com/macros/s/AKfycbyMS9azkxb4nCw99g4Il5n8vIfEKJTUedb1A80vI51PqpQh2BnCPmQ9X0e_2eS3SZQ3hw/exec"
 )
 
-# טוקן ימות המשיח (מספר מערכת:סיסמה) לצורך הורדת הקלטות (אופציונלי אך מומלץ)
-# לדוגמה: "0773137770:123456"
+# מספר מערכת:סיסמה בימות המשיח
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN", "")
 
 sessions = {}
@@ -37,9 +35,14 @@ def yemot_read(text: str, var_name: str, max_d=10, min_d=1, timeout=7):
     cleaned = clean_tts(text)
     return f"read=t-{cleaned}={var_name},no,{max_d},{min_d},{timeout},No"
 
-def yemot_record(text: str, var_name: str):
+def yemot_record_no_menu(text: str, var_name: str):
+    """
+    הקלטה בימות המשיח ללא התפריט האוטומטי המובנה של ימות המשיח!
+    הפרמטרים: טקסט, שם משתנה, ללא אישור פנימי (no), פורמט record
+    """
     cleaned = clean_tts(text)
-    return f"read=t-{cleaned}={var_name},no,record"
+    # שימוש בהגדרת no כדי שימות המשיח לא ישמיע את תפריט האישור המובנה שלו
+    return f"read=t-{cleaned}={var_name},no,record,,,no"
 
 def yemot_msg(text: str, go_to="hangup"):
     cleaned = clean_tts(text)
@@ -47,35 +50,36 @@ def yemot_msg(text: str, go_to="hangup"):
 
 
 # =========================================================================
-# פונקציית תמלול אודיו באמצעות Google SpeechRecognition
+# פונקציית תמלול אודיו דרך SpeechRecognition
 # =========================================================================
-def transcribe_yemot_audio(file_path_or_url: str) -> str:
-    """הורדת האודיו מימות המשיח ותמלול לעברית דרך SpeechRecognition"""
-    if not file_path_or_url:
-        return "לא זוהה"
+def transcribe_yemot_audio(file_path: str) -> str:
+    if not file_path:
+        return "ללא שם"
 
+    # ניקוי הנתיב
+    path = file_path.strip()
+    if not path.startswith("/") and not path.startswith("ivr2:"):
+        path = "/" + path
+
+    # הורדת הקובץ משרתי ימות המשיח
+    download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path={path}"
+    
     try:
-        # בדיקה האם מדובר בקישור ישיר או בנתיב פנימי של ימות המשיח
-        if file_path_or_url.startswith("http://") or file_path_or_url.startswith("https://"):
-            download_url = file_path_or_url
-        else:
-            # נתיב של ימות המשיח - הורדה דרך ה-API של ימות
-            download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path={file_path_or_url}"
+        resp = requests.get(download_url, timeout=12)
+        if resp.status_code != 200 or len(resp.content) < 500:
+            # אם ימות החזיר שגיאת התחברות
+            print(f"Failed to download audio from Yemot. Status: {resp.status_code}")
+            return "הקלטה קולית נקלטה"
 
-        resp = requests.get(download_url, timeout=10)
-        if resp.status_code != 200:
-            return "הקלטה ללא תמלול"
-
-        # המרת קובץ האודיו ל-WAV תואם (PCM 16-bit) בעזרת pydub
-        audio_stream = io.BytesIO(resp.content)
-        sound = AudioSegment.from_file(audio_stream)
+        # המרה ל-WAV 16kHz מונו
+        sound = AudioSegment.from_file(io.BytesIO(resp.content))
         sound = sound.set_frame_rate(16000).set_channels(1)
         
         wav_io = io.BytesIO()
         sound.export(wav_io, format="wav")
         wav_io.seek(0)
 
-        # תמלול ע"י ספריית SpeechRecognition של גוגל
+        # תמלול ע"י Google SpeechRecognition בעברית
         recognizer = sr.Recognizer()
         with sr.AudioFile(wav_io) as source:
             audio_data = recognizer.record(source)
@@ -83,14 +87,14 @@ def transcribe_yemot_audio(file_path_or_url: str) -> str:
             return text.strip()
 
     except sr.UnknownValueError:
-        return "לא הצלחתי לפענח את הדיבור"
+        return "דיבור לא ברור"
     except Exception as e:
-        print(f"Transcription error: {e}")
-        return "הקלטה קולית"
+        print(f"Error in transcription: {e}")
+        return "הקלטה קולית נקלטה"
 
 
 # =========================================================================
-# ניהול שיחות טלפון (IVR Gateway)
+# ניהול מהלך השיחה
 # =========================================================================
 async def handle_call(request: Request):
     p = dict(request.query_params)
@@ -112,7 +116,7 @@ async def handle_call(request: Request):
     sess = sessions[call_id]
 
     # -------------------------------------------------------------
-    # 1. תפריט פתיחה ראשי
+    # 1. תפריט ראשי
     # -------------------------------------------------------------
     if "user_menu" not in p and "user_menu" not in sess:
         msg = "ברוך הבא לגמח משניות רייזמן להשאלה, משתמש רשום בנדרים פלוס הקש 1, משתמש מזדמן הקש 2, להשארת הודעה לגמח הקש 3"
@@ -123,26 +127,23 @@ async def handle_call(request: Request):
 
     menu_choice = sess.get("user_menu")
 
-    # -------------------------------------------------------------
-    # מקש 3: השארת הודעה לגמ"ח
-    # -------------------------------------------------------------
+    # --- אפשרות 3: השארת הודעה ---
     if menu_choice == "3":
         if "message_audio" not in p:
-            return PlainTextResponse(yemot_record("הקלט את הודעתך לאחר הצליל ולסיום הקש סולמית", "message_audio"))
+            return PlainTextResponse(yemot_record_no_menu("הקלט את הודעתך לאחר הצליל ולסיום הקש סולמית", "message_audio"))
 
         if "msg_confirm" not in p:
             return PlainTextResponse(yemot_read("לאישור הקישו 1, לתיקון הקישו 2", "msg_confirm", 1, 1))
 
         if p.get("msg_confirm") == "1":
-            audio_url = p.get("message_audio", "")
-            send_admin_email(sess.get("caller_phone", ""), audio_url)
-            return PlainTextResponse(yemot_msg("הודעתך נשמרה בהצלחה, תודה ולהתראות"))
+            audio_path = p.get("message_audio", "")
+            download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path={audio_path}"
+            send_admin_email(sess.get("caller_phone", ""), download_url)
+            return PlainTextResponse(yemot_msg("הודעתך נשמרה ונשלחה בהצלחה, תודה ולהתראות"))
         else:
-            return PlainTextResponse(yemot_record("הקלט שוב את הודעתך לאחר הצליל ולסיום הקש סולמית", "message_audio"))
+            return PlainTextResponse(yemot_record_no_menu("הקלט שוב את הודעתך לאחר הצליל ולסיום הקש סולמית", "message_audio"))
 
-    # -------------------------------------------------------------
-    # מקש 1: נדרים פלוס
-    # -------------------------------------------------------------
+    # --- אפשרות 1: נדרים פלוס ---
     if menu_choice == "1":
         if "id_num" not in p:
             return PlainTextResponse(yemot_read("הקש את מספר הזהות ולאחריו הקש סולמית", "id_num", 9, 8, 10))
@@ -173,17 +174,14 @@ async def handle_call(request: Request):
                 sess.pop("nedarim_pass", None)
                 return PlainTextResponse(yemot_read("הפרטים אינם תואמים, הקש שוב את מספר הזהות ובסיום סולמית", "id_num", 9, 8, 10))
 
-    # -------------------------------------------------------------
-    # מקש 2: משתמש מזדמן - הקלטה, תמלול, אישור והזנה לשיטס
-    # -------------------------------------------------------------
+    # --- אפשרות 2: משתמש מזדמן (תמלול + אישור 1 / תיקון 2) ---
     if menu_choice == "2":
         sess["user_type"] = "מזדמן"
 
-        # שלב א: הקלטת שם
+        # שלב א: שם
         if "name_audio" not in p:
-            return PlainTextResponse(yemot_record("אמור בקול ברור את שם פרטי ומשפחה ולאחר מכן הקש סולמית", "name_audio"))
+            return PlainTextResponse(yemot_record_no_menu("אמור בקול ברור את שם פרטי ומשפחה ולאחר מכן הקש סולמית", "name_audio"))
 
-        # תמלול השם והשמעה לאישור
         if "name_text" not in sess:
             sess["name_text"] = transcribe_yemot_audio(p.get("name_audio"))
 
@@ -193,21 +191,20 @@ async def handle_call(request: Request):
 
         if p.get("name_confirm") == "2":
             sess.pop("name_text", None)
-            return PlainTextResponse(yemot_record("אמור שוב בקול ברור את שם פרטי ומשפחה ולאחר מכן הקש סולמית", "name_audio"))
+            return PlainTextResponse(yemot_record_no_menu("אמור שוב בקול ברור את שם פרטי ומשפחה ולאחר מכן הקש סולמית", "name_audio"))
 
         sess["name"] = sess["name_text"]
 
-        # שלב ב: מספר טלפון
+        # שלב ב: טלפון
         if "casual_phone" not in p:
             return PlainTextResponse(yemot_read("הקש מספר פלאפון ולאחר מכן הקש סולמית", "casual_phone", 10, 9, 10))
 
         sess["phone"] = p.get("casual_phone")
 
-        # שלב ג: הקלטת כתובת
+        # שלב ג: כתובת
         if "address_audio" not in p:
-            return PlainTextResponse(yemot_record("אמור בקול ברור את הכתובת המלאה שלך ולאחר מכן הקש סולמית", "address_audio"))
+            return PlainTextResponse(yemot_record_no_menu("אמור בקול ברור את הכתובת המלאה שלך ולאחר מכן הקש סולמית", "address_audio"))
 
-        # תמלול הכתובת והשמעה לאישור
         if "address_text" not in sess:
             sess["address_text"] = transcribe_yemot_audio(p.get("address_audio"))
 
@@ -217,11 +214,11 @@ async def handle_call(request: Request):
 
         if p.get("addr_confirm") == "2":
             sess.pop("address_text", None)
-            return PlainTextResponse(yemot_record("אמור שוב בקול ברור את הכתובת המלאה שלך ולאחר מכן הקש סולמית", "address_audio"))
+            return PlainTextResponse(yemot_record_no_menu("אמור שוב בקול ברור את הכתובת המלאה שלך ולאחר מכן הקש סולמית", "address_audio"))
 
         sess["address"] = sess["address_text"]
 
-        # שלב ד: הזנה לשיטס בסיום הרישום
+        # רישום בשיטס בסיום אישור הכתובת
         if "casual_saved" not in sess:
             try:
                 requests.get(
@@ -249,14 +246,14 @@ async def handle_call(request: Request):
         msg = "הסבר שימוש, המספר הסידורי מוטבע על גב כרך המשניות, בהקשת מספר זה ניתן לבצע השאלה או החזרה, לבחירה דרך מספר סידורי הקש 1, לפרטים מלאים הקש 2"
         return PlainTextResponse(yemot_read(msg, "book_choice", 1, 1))
 
-    # בחירה לפי מספר סידורי (מקש 1)
+    # מקש 1: מספר סידורי
     if b_choice == "1":
         if "serial_num" not in p:
             return PlainTextResponse(yemot_read("הקש את המספר הסידורי ולאחריו הקש סולמית", "serial_num", 6, 1, 10))
         sess["book_id"] = p.get("serial_num")
         sess["seder_mishna"] = "-"
 
-    # בחירה לפי סדר ומסכת (מקש 2)
+    # מקש 2: סדר ומסכת (תמלול שם המשנה + אישור 1 / תיקון 2)
     elif b_choice == "2":
         if "seder_num" not in p and "seder_name" not in sess:
             msg = "הקש את מספר הסדר, 1 זרעים, 2 מועד, 3 נשים, 4 נזיקין, 5 קדשים, 6 טהרות, ובסיום סולמית"
@@ -266,7 +263,7 @@ async def handle_call(request: Request):
             sess["seder_name"] = SEDARIM.get(p.get("seder_num"), "כללי")
 
         if "mishna_audio" not in p:
-            return PlainTextResponse(yemot_record("אמור בקול ברור את שם המשנה ולאחר מכן הקש סולמית", "mishna_audio"))
+            return PlainTextResponse(yemot_record_no_menu("אמור בקול ברור את שם המשנה ולאחר מכן הקש סולמית", "mishna_audio"))
 
         if "mishna_text" not in sess:
             sess["mishna_text"] = transcribe_yemot_audio(p.get("mishna_audio"))
@@ -277,7 +274,7 @@ async def handle_call(request: Request):
 
         if p.get("mishna_confirm") == "2":
             sess.pop("mishna_text", None)
-            return PlainTextResponse(yemot_record("אמור שוב בקול ברור את שם המשנה ולאחר מכן הקש סולמית", "mishna_audio"))
+            return PlainTextResponse(yemot_record_no_menu("אמור שוב בקול ברור את שם המשנה ולאחר מכן הקש סולמית", "mishna_audio"))
 
         sess["book_id"] = "-"
         sess["seder_mishna"] = f"{sess.get('seder_name', '')} - {sess['mishna_text']}"
@@ -290,7 +287,7 @@ async def handle_call(request: Request):
 
     act = p.get("action_choice")
     if act == "1":
-        # ביצוע השאלה
+        # השאלה
         try:
             requests.get(
                 f"{SCRIPT_URL}?action=borrow&bookId={sess.get('book_id', '-')}&sederMishna={sess.get('seder_mishna', '-')}"
@@ -302,7 +299,7 @@ async def handle_call(request: Request):
         return PlainTextResponse(yemot_msg("העדכון נקלט בהצלחה, תודה ולהתראות"))
 
     elif act == "2":
-        # ביצוע החזרה
+        # החזרה
         try:
             res = requests.get(
                 f"{SCRIPT_URL}?action=return&bookId={sess.get('book_id', '-')}&sederMishna={sess.get('seder_mishna', '-')}&phone={sess.get('phone', '')}",
