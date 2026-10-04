@@ -4,122 +4,193 @@ import smtplib
 from email.message import EmailMessage
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
-import speech_recognition as sr
 
-app = FastAPI()
+app = FastAPI(title="Gemach Reisman IVR Server")
 
-# 👇 הזינו פה פעם אחת את הקישור שקיבלתם מפריסת ה-Apps Script:
-SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx_YOUR_ID_HERE/exec"
+# 👇 כתובת ה-Apps Script שלכם
+SCRIPT_URL = os.environ.get("SCRIPT_URL", "https://script.google.com/macros/s/YOUR_SCRIPT_ID/exec")
 
+# זיכרון שלבי שיחה
 sessions = {}
 
-def yemot(text="", read_var=None, max_digits=10):
-    if read_var:
-        return f"read=t-{text}={read_var},no,{max_digits},1,7,Number"
-    return f"id_list_message=t-{text}&go_to_folder=hangup"
+def yemot_read(text: str, var_name: str, max_d=10, min_d=1, timeout=7):
+    return f"read=t-{text}={var_name},no,{max_d},{min_d},{timeout},Number"
+
+def yemot_msg(text: str, go_to="hangup"):
+    return f"id_list_message=t-{text}&go_to_folder={go_to}"
+
+def yemot_record(text: str, folder_name: str):
+    """הקלטה והשמעה לאישור לפי האפיון: 1 לאישור, 2 להקלטה מחדש"""
+    return f"record=t-{text}={folder_name},no,yes"
+
+SEDARIM = {
+    "1": "זרעים", "2": "מועד", "3": "נשים",
+    "4": "נזיקין", "5": "קדשים", "6": "טהרות"
+}
 
 @app.get("/ivr", response_class=PlainTextResponse)
-async def ivr(request: Request):
+async def ivr_gateway(request: Request):
     p = dict(request.query_params)
-    caller = p.get("ApiPhone", "")
-    call_id = p.get("ApiCallId", caller)
-    step = p.get("step", "menu")
+    call_id = p.get("ApiCallId", p.get("ApiPhone", "default"))
+    step = p.get("step", "init")
 
     if call_id not in sessions:
-        sessions[call_id] = {"phone": caller}
+        sessions[call_id] = {"caller_phone": p.get("ApiPhone", "")}
     sess = sessions[call_id]
 
-    # תפריט ראשי
-    if step == "menu":
-        choice = p.get("menu_choice")
-        if not choice:
-            return yemot("להשאלת ספר הקישו 1, להחזרה 2, לרשימת הספרים שלכם 3, לרישום 4, להשארת הודעה 8.", "menu_choice", 1) + "&step=menu"
-        sess["action"] = choice
-        if choice in ["1", "2", "3"]:
-            return yemot("לכניסה עם המספר ממנו התקשרתם הקישו 1, למספר אחר הקישו 2.", "auth_type", 1) + "&step=auth"
-        elif choice == "4":
-            return PlainTextResponse("go_to_folder=/4")
-        elif choice == "8":
-            return PlainTextResponse("go_to_folder=/8")
+    # --- פתיח ובחירת משתמש ---
+    if step == "init":
+        msg = "ברוך הבא לגמ\"ח משניות רייזמן להשאלה. משתמש רשום בנדרים פלוס, הקש 1. משתמש מזדמן, הקש 2. הודעה לגמ\"ח, הקש 3."
+        return yemot_read(msg, "user_menu", 1) + "&step=user_menu"
 
-    # זיהוי טלפון
-    if step == "auth":
-        if p.get("auth_type") == "2":
-            return yemot("הקישו את מספר הטלפון שלכם ובסיום סולמית:", "manual_phone", 10) + "&step=verify"
-        sess["phone"] = caller
-        return check_and_route(sess)
+    if step == "user_menu":
+        choice = p.get("user_menu")
+        sess["user_menu"] = choice
 
-    if step == "verify":
-        sess["phone"] = p.get("manual_phone", caller)
-        return check_and_route(sess)
+        # מקש 3: השארת הודעה לגמ"ח
+        if choice == "3":
+            return yemot_record("הקלט את הודעתך לאחר הישמע הצליל ולסיום הקש סולמית.", "message_audio") + "&step=msg_confirm"
 
-    # 1. השאלה
-    if step == "borrow":
-        book_id = p.get("book_id")
-        if not book_id:
-            return yemot("הקישו את מספר הספר להשאלה ובסיום סולמית:", "book_id", 6) + "&step=borrow"
+        # מקש 1: נדרים פלוס
+        elif choice == "1":
+            return yemot_read("הקש את מספר הזהות ולאחריו הקש סולמית:", "id_num", 9, 7) + "&step=nedarim_id"
+
+        # מקש 2: משתמש מזדמן
+        elif choice == "2":
+            sess["user_type"] = "מזדמן"
+            return yemot_record("אמור בקול ברור את שם פרטי ומשפחה ולאחר מכן הקש סולמית.", "name_audio") + "&step=casual_name_confirm"
+
+        return yemot_msg("מקש שגוי.") + "&step=init"
+
+    # --- מקש 3: אישור הודעה ---
+    if step == "msg_confirm":
+        conf = p.get("message_audio_confirm")
+        if conf == "1":
+            # שליחה למייל של הגמ"ח
+            file_url = p.get("message_audio_url", "לא צורף קישור")
+            send_admin_email(sess["caller_phone"], file_url)
+            return yemot_msg("הודעתך נשמרה ונשלחה בהצלחה. תודה ולהתראות.")
+        else:
+            return yemot_record("הקלט את הודעתך שוב לאחר הצליל ולסיום הקש סולמית.", "message_audio") + "&step=msg_confirm"
+
+    # --- מקש 1: נדרים פלוס (ת"ז וסיסמה) ---
+    if step == "nedarim_id":
+        sess["id_num"] = p.get("id_num")
+        return yemot_read("הקש את סיסמתך בנדרים פלוס ולאחריו הקש סולמית:", "nedarim_pass", 8, 4) + "&step=nedarim_pass"
+
+    if step == "nedarim_pass":
+        sess["nedarim_pass"] = p.get("nedarim_pass")
+        # בדיקה בשיטס בלשונית משתמשי נדרים פלוס
+        res = requests.get(f"{SCRIPT_URL}?action=verify_nedarim&id_number={sess['id_num']}&password={sess['nedarim_pass']}").json()
+
+        if res.get("success"):
+            sess["user_type"] = "נדרים פלוס"
+            sess["name"] = res.get("name")
+            sess["phone"] = res.get("phone", sess["caller_phone"])
+            return go_to_book_selection()
+        else:
+            return yemot_msg("המערכת מזהה כי הפרטים אינם תואמים. אנא נסה שנית.") + "&step=user_menu&user_menu=1"
+
+    # --- מקש 2: רישום משתמש מזדמן ---
+    if step == "casual_name_confirm":
+        if p.get("name_audio_confirm") == "2":
+            return yemot_record("אמור בקול ברור את שם פרטי ומשפחה ולאחר מכן הקש סולמית.", "name_audio") + "&step=casual_name_confirm"
         
-        # עדכון בשיטס ב-GET פשוט!
-        requests.get(f"{SCRIPT_URL}?action=borrow&bookId={book_id}&phone={sess['phone']}&name={sess.get('name', 'משאיל')}")
-        return yemot("ההשאלה עודכנה בהצלחה ל-3 ימים. להתראות!")
+        sess["name"] = "משתמש מזדמן (מוקלט)"
+        return yemot_read("הקש מספר פלאפון ולאחר מכן הקש סולמית:", "casual_phone", 10, 9) + "&step=casual_phone"
 
-    # 2. החזרה
-    if step == "return_choose":
-        idx = int(p.get("ret_choice", "1")) - 1
-        loans = sess.get("loans", [])
-        if 0 <= idx < len(loans):
-            book_to_return = loans[idx]
-            requests.get(f"{SCRIPT_URL}?action=return&bookId={book_to_return}")
-            return yemot("ההחזרה עודכנה בהצלחה, תודה רבה!")
-        return yemot("שגיאה בבחירה.")
+    if step == "casual_phone":
+        sess["phone"] = p.get("casual_phone")
+        return yemot_record("אמור בקול ברור את הכתובת המלאה שלך ולאחר מכן הקש סולמית.", "address_audio") + "&step=casual_address_confirm"
 
-    return yemot("שלום ולהתראות.")
-
-def check_and_route(sess):
-    # בדיקת משתמש ישירות מול השיטס
-    res = requests.get(f"{SCRIPT_URL}?action=check_user&phone={sess['phone']}").json()
-    if not res.get("exists"):
-        return yemot("אינכם רשומים במערכת. הנכם מועברים לרישום.") + "&step=menu&menu_choice=4"
-    
-    sess["name"] = res.get("name")
-    action = sess["action"]
-
-    if action == "1":
-        return yemot("אנא הקישו את מספר הספר להשאלה ובסיום סולמית:", "book_id", 6) + "&step=borrow"
-
-    if action == "2":
-        # בדיקת ספרים מושאלים מהשיטס
-        l_res = requests.get(f"{SCRIPT_URL}?action=get_loans&phone={sess['phone']}").json()
-        loans = l_res.get("books", [])
-        sess["loans"] = loans
-
-        if not loans:
-            return yemot("אין ספרים מושאלים על שימכם.")
-        if len(loans) == 1:
-            return yemot(f"זוהה ספר מושאל מספר {loans[0]}. להחזרתו הקישו 1.", "ret_choice", 1) + "&step=return_choose"
+    if step == "casual_address_confirm":
+        if p.get("address_audio_confirm") == "2":
+            return yemot_record("אמור בקול ברור את הכתובת המלאה שלך ולאחר מכן הקש סולמית.", "address_audio") + "&step=casual_address_confirm"
         
-        msg = "קיימים מספר ספרים ברשותכם. "
-        for i, b in enumerate(loans):
-            msg += f"לספר {b} הקישו {i+1}. "
-        return yemot(msg, "ret_choice", 2) + "&step=return_choose"
+        sess["address"] = "כתובת מוקלטת"
+        # שמירת המזדמן בשיטס
+        requests.get(f"{SCRIPT_URL}?action=register_casual&name={sess['name']}&phone={sess['phone']}&address={sess['address']}")
+        return go_to_book_selection()
 
-    if action == "3":
-        l_res = requests.get(f"{SCRIPT_URL}?action=get_loans&phone={sess['phone']}").json()
-        loans = l_res.get("books", [])
-        if not loans:
-            return yemot("אין ספרים מושאלים ברשותכם.")
-        return yemot("הספרים שברשותכם הם: " + ", ".join(loans))
+    # --- בחירת משנה ---
+    if step == "book_selection":
+        b_choice = p.get("book_choice")
+        if b_choice == "9":
+            # הסבר שימוש
+            msg = "הסבר שימוש: המספר הסידורי מוטבע על גב כרך המשניות. בהקשת מספר זה ניתן להשאיל או להחזיר את הכרך באופן ישיר. "
+            return yemot_msg(msg) + "&step=book_selection_menu"
+        elif b_choice == "1":
+            return yemot_read("הקש את המספר הסידורי ולאחריו הקש סולמית:", "serial_num", 6, 1) + "&step=got_serial"
+        elif b_choice == "2":
+            msg = "הקש את מספר הסדר: 1 זרעים, 2 מועד, 3 נשים, 4 נזיקין, 5 קדשים, 6 טהרות, ולאחריו הקש סולמית:"
+            return yemot_read(msg, "seder_num", 1) + "&step=got_seder"
 
-# שלוחה 4: פענוח שם ושמירה בשיטס
-@app.post("/upload_name")
-async def upload_name(phone: str, file_path: str):
-    recognizer = sr.Recognizer()
+        return go_to_book_selection()
+
+    if step == "book_selection_menu":
+        return go_to_book_selection()
+
+    if step == "got_serial":
+        sess["book_id"] = p.get("serial_num")
+        sess["seder_mishna"] = "-"
+        return go_to_action()
+
+    if step == "got_seder":
+        seder_idx = p.get("seder_num", "1")
+        sess["seder_name"] = SEDARIM.get(seder_idx, "כללי")
+        return yemot_record("אמור בקול ברור את שם המשנה ולאחר מכן הקש סולמית.", "mishna_name_audio") + "&step=mishna_audio_confirm"
+
+    if step == "mishna_audio_confirm":
+        if p.get("mishna_name_audio_confirm") == "2":
+            return yemot_record("אמור בקול ברור את שם המשנה ולאחר מכן הקש סולמית.", "mishna_name_audio") + "&step=mishna_audio_confirm"
+        
+        sess["book_id"] = "-"
+        sess["seder_mishna"] = f"{sess['seder_name']} (מוקלט)"
+        return go_to_action()
+
+    # --- פעולה: השאלה או החזרה ---
+    if step == "action_choice":
+        act = p.get("action_choice")
+        if act == "1":
+            # השאלה
+            requests.get(
+                f"{SCRIPT_URL}?action=borrow&bookId={sess.get('book_id')}&sederMishna={sess.get('seder_mishna')}"
+                f"&name={sess.get('name')}&phone={sess.get('phone')}&address={sess.get('address', '-')}&userType={sess.get('user_type')}"
+            )
+            return yemot_msg("העדכון נקלט בהצלחה, תודה ולהתראות.")
+        elif act == "2":
+            # החזרה
+            res = requests.get(
+                f"{SCRIPT_URL}?action=return&bookId={sess.get('book_id')}&sederMishna={sess.get('seder_mishna')}&phone={sess.get('phone')}"
+            ).json()
+            if res.get("success"):
+                return yemot_msg("העדכון נקלט בהצלחה, תודה ולהתראות.")
+            else:
+                return yemot_msg("לא נמצאה השאלה פעילה מתאימה במערכת. תודה ולהתראות.")
+
+    return yemot_msg("תודה ולהתראות.")
+
+def go_to_book_selection():
+    msg = "לבחירת משנה דרך המספר הסידורי הקש 1. לפרטים מלאים הקש 2. להסבר על המספר הסידורי הקש 9."
+    return yemot_read(msg, "book_choice", 1) + "&step=book_selection"
+
+def go_to_action():
+    msg = "להשאלת המשנה הקש 1. להחזרת המשנה הקש 2."
+    return yemot_read(msg, "action_choice", 1) + "&step=action_choice"
+
+def send_admin_email(phone, file_url):
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_pass = os.environ.get("SMTP_PASS")
+    admin_mail = os.environ.get("ADMIN_EMAIL", smtp_user)
+    if not smtp_user or not smtp_pass: return
     try:
-        with sr.AudioFile(file_path) as source:
-            audio = recognizer.record(source)
-        name = recognizer.recognize_google(audio, language="he-IL")
+        msg = EmailMessage()
+        msg["Subject"] = "פנייה ממערכת ההשאלות"
+        msg["From"] = smtp_user
+        msg["To"] = admin_mail
+        msg.set_content(f"שלום,\nהתקבלה הודעה חדשה מאת טלפון: {phone}\nקישור להקלטה: {file_url}")
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(smtp_user, smtp_pass)
+            smtp.send_message(msg)
     except:
-        name = "משתמש חדש"
-    
-    requests.get(f"{SCRIPT_URL}?action=register_user&phone={phone}&name={name}")
-    return {"status": "ok", "name": name}
+        pass
