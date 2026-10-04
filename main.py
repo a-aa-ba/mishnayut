@@ -8,7 +8,7 @@ from fastapi.responses import PlainTextResponse
 app = FastAPI(title="Gemach Reisman IVR Server")
 
 # 👇 כתובת ה-Apps Script שלכם
-SCRIPT_URL = os.environ.get("SCRIPT_URL", "https://script.google.com/macros/s/YOUR_SCRIPT_ID/exec")
+SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyMS9azkxb4nCw99g4Il5n8vIfEKJTUedb1A80vI51PqpQh2BnCPmQ9X0e_2eS3SZQ3hw/exec"
 
 # זיכרון שלבי שיחה
 sessions = {}
