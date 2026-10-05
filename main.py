@@ -42,14 +42,16 @@ def yemot_msg(text: str, go_to="hangup"):
     cleaned = clean_tts(text)
     return f"id_list_message=t-{cleaned}&go_to_folder={go_to}"
 
+def get_restart_folder(p: dict) -> str:
+    """זיהוי השלוחה הנוכחית לחזרה חלקה לתפריט הראשי ללא ניתוק"""
+    ext = p.get("ApiExtension", "").strip("/")
+    return f"/{ext}" if ext else "/"
+
 
 # =========================================================================
-# פונקציית תמלול משופרת (כולל הגברת ווליום של קו הטלפון)
+# פונקציית תמלול אודיו דרך SpeechRecognition
 # =========================================================================
 def transcribe_yemot_audio(file_path: str):
-    """
-    מחזיר את הטקסט המפוענח. אם הפענוח נכשל - מחזיר None!
-    """
     print(f"\n🎙️ --- [התחלת תמלול הקלטה] ---")
     print(f"📁 נתיב קובץ: {file_path}")
 
@@ -68,13 +70,10 @@ def transcribe_yemot_audio(file_path: str):
     try:
         resp = requests.get(download_url, timeout=12)
         if resp.status_code != 200 or len(resp.content) < 300 or resp.content.startswith(b"{\""):
-            print(f"❌ שגיאה בהורדת הקובץ משרת ימות המשיח.")
+            print("❌ שגיאה בהורדת הקובץ משרת ימות המשיח.")
             return None
 
-        print("🔄 מגביר ווליום (Normalize) וממיר ל-WAV 16kHz...")
         sound = AudioSegment.from_file(io.BytesIO(resp.content))
-        
-        # הגברת ווליום אוטומטית לקווי טלפון שקטים!
         sound = normalize(sound)
         sound = sound.set_frame_rate(16000).set_channels(1)
         
@@ -82,19 +81,18 @@ def transcribe_yemot_audio(file_path: str):
         sound.export(wav_io, format="wav")
         wav_io.seek(0)
 
-        print("🚀 שולח ל-Google SpeechRecognition...")
         recognizer = sr.Recognizer()
         with sr.AudioFile(wav_io) as source:
             audio_data = recognizer.record(source)
             text = recognizer.recognize_google(audio_data, language="he-IL")
-            print(f"✅ [הצלחה בתמלול!] הטקסט שפוענח: '{text}'")
+            print(f"✅ [הצלחה בתמלול!] הטקסט: '{text}'")
             return text.strip()
 
     except sr.UnknownValueError:
-        print("⚠️ [גוגל לא זיהה מילים ברורות בהקלטה]")
+        print("⚠️ [גוגל לא זיהה מילים ברורות]")
         return None
     except Exception as e:
-        print(f"❌ שגיאה בתהליך התמלול: {e}")
+        print(f"❌ שגיאה בתמלול: {e}")
         return None
     finally:
         print(f"🏁 --- [סיום תהליך תמלול] ---\n")
@@ -123,7 +121,11 @@ async def handle_call(request: Request):
         sessions[call_id] = {"caller_phone": p.get("ApiPhone", "")}
     sess = sessions[call_id]
 
-    # --- 1. תפריט פתיחה ---
+    restart_folder = get_restart_folder(p)
+
+    # -------------------------------------------------------------
+    # 1. תפריט פתיחה
+    # -------------------------------------------------------------
     if "user_menu" not in p and "user_menu" not in sess:
         msg = "ברוך הבא לגמח משניות רייזמן להשאלה, משתמש רשום בנדרים פלוס הקש 1, משתמש מזדמן הקש 2, להשארת הודעה לגמח הקש 3"
         return send_yemot_response(yemot_read(msg, "user_menu", 1, 1))
@@ -133,7 +135,7 @@ async def handle_call(request: Request):
 
     menu_choice = sess.get("user_menu")
 
-    # --- מקש 3: השארת הודעה ---
+    # --- מקש 3: השארת הודעה לגמ"ח ---
     if menu_choice == "3":
         if "message_audio" not in p:
             return send_yemot_response(yemot_record_no_menu("הקלט את הודעתך לאחר הצליל ולסיום הקש סולמית", "message_audio"))
@@ -145,7 +147,10 @@ async def handle_call(request: Request):
             audio_path = p.get("message_audio", "")
             download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path=ivr2:{audio_path}"
             send_admin_email(sess.get("caller_phone", ""), download_url)
-            return send_yemot_response(yemot_msg("הודעתך נשמרה ונשלחה בהצלחה, תודה ולהתראות"))
+            
+            # איפוס נתוני השיחה וחזרה לתפריט הראשי ללא ניתוק!
+            sessions.pop(call_id, None)
+            return send_yemot_response(yemot_msg("הודעתך נשמרה ונשלחה בהצלחה, תודה", go_to=restart_folder))
         else:
             return send_yemot_response(yemot_record_no_menu("הקלט שוב את הודעתך לאחר הצליל ולסיום הקש סולמית", "message_audio"))
 
@@ -188,21 +193,18 @@ async def handle_call(request: Request):
         if "name_audio" not in p:
             return send_yemot_response(yemot_record_no_menu("אמור בקול ברור את שם פרטי ומשפחה ולאחר מכן הקש סולמית", "name_audio"))
 
-        # תמלול ההקלטה אם זו הקלטה חדשה
         curr_name_audio = p.get("name_audio")
         if curr_name_audio and sess.get("last_processed_name_audio") != curr_name_audio:
             sess["last_processed_name_audio"] = curr_name_audio
             transcribed_name = transcribe_yemot_audio(curr_name_audio)
 
             if not transcribed_name:
-                # 🛑 התמלול נכשל! לא מציעים אישור אלא מבקשים להקליט מחדש!
                 print("🔄 הדיבור לא פוענח - מחזיר להקלטת שם מחדש.")
                 sess.pop("name_text", None)
                 return send_yemot_response(yemot_record_no_menu("הדיבור אינו ברור, אנא אמרו שוב בקול ברור את שם פרטי ומשפחה ולאחר מכן הקש סולמית", "name_audio"))
             
             sess["name_text"] = transcribed_name
 
-        # השמעת השם לאישור
         if "name_confirm" not in p:
             msg = f"השם שנקלט הוא {sess.get('name_text', '')}, לאישור הקישו 1, לתיקון הקישו 2"
             return send_yemot_response(yemot_read(msg, "name_confirm", 1, 1))
@@ -230,7 +232,6 @@ async def handle_call(request: Request):
             transcribed_addr = transcribe_yemot_audio(curr_addr_audio)
 
             if not transcribed_addr:
-                # 🛑 התמלול נכשל!
                 print("🔄 כתובת לא פוענחה - מחזיר להקלטת כתובת מחדש.")
                 sess.pop("address_text", None)
                 return send_yemot_response(yemot_record_no_menu("הדיבור אינו ברור, אנא אמרו שוב בקול ברור את הכתובת המלאה שלך ולאחר מכן הקש סולמית", "address_audio"))
@@ -320,13 +321,14 @@ async def handle_call(request: Request):
         sess["seder_mishna"] = f"{sess.get('seder_name', '')} - {sess.get('mishna_text', '')}"
 
     # -------------------------------------------------------------
-    # 3. פעולה: השאלה או החזרה
+    # 3. פעולה: השאלה או החזרה (חזרה לתפריט הראשי בסיום!)
     # -------------------------------------------------------------
     if "action_choice" not in p:
         return send_yemot_response(yemot_read("להשאלת המשנה הקש 1, להחזרת המשנה הקש 2", "action_choice", 1, 1))
 
     act = p.get("action_choice")
     if act == "1":
+        # ביצוע השאלה
         try:
             requests.get(
                 f"{SCRIPT_URL}?action=borrow&bookId={sess.get('book_id', '-')}&sederMishna={sess.get('seder_mishna', '-')}"
@@ -335,9 +337,13 @@ async def handle_call(request: Request):
             )
         except Exception:
             pass
-        return send_yemot_response(yemot_msg("העדכון נקלט בהצלחה, תודה ולהתראות"))
+
+        # איפוס נתוני הפעולה וחזרה חלקה לתפריט הראשי ללא ניתוק!
+        sessions.pop(call_id, None)
+        return send_yemot_response(yemot_msg("העדכון נקלט בהצלחה, תודה", go_to=restart_folder))
 
     elif act == "2":
+        # ביצוע החזרה
         try:
             res = requests.get(
                 f"{SCRIPT_URL}?action=return&bookId={sess.get('book_id', '-')}&sederMishna={sess.get('seder_mishna', '-')}&phone={sess.get('phone', '')}",
@@ -346,12 +352,15 @@ async def handle_call(request: Request):
         except Exception:
             res = {"success": True}
 
+        # איפוס נתוני הפעולה וחזרה חלקה לתפריט הראשי ללא ניתוק!
+        sessions.pop(call_id, None)
         if res.get("success"):
-            return send_yemot_response(yemot_msg("העדכון נקלט בהצלחה, תודה ולהתראות"))
+            return send_yemot_response(yemot_msg("העדכון נקלט בהצלחה, תודה", go_to=restart_folder))
         else:
-            return send_yemot_response(yemot_msg("לא נמצאה השאלה פעילה מתאימה במערכת, תודה ולהתראות"))
+            return send_yemot_response(yemot_msg("לא נמצאה השאלה פעילה מתאימה במערכת, תודה", go_to=restart_folder))
 
     return send_yemot_response(yemot_msg("תודה ולהתראות"))
+
 
 def send_yemot_response(text: str):
     print(f"📤 [תשובה לימות המשיח]: {text}")
