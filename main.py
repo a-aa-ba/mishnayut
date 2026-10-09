@@ -99,7 +99,7 @@ def transcribe_yemot_audio(file_path: str):
 
 
 # =========================================================================
-# ניהול השיחה
+# ניהול השיחה (מעודכן לפי דפי האפיון 1, 2 ו-3)
 # =========================================================================
 async def handle_call(request: Request):
     p = dict(request.query_params)
@@ -124,10 +124,10 @@ async def handle_call(request: Request):
     restart_folder = get_restart_folder(p)
 
     # -------------------------------------------------------------
-    # 1. תפריט פתיחה
+    # 1. תפריט פתיחה (דף 1: פרטי משתמש)
     # -------------------------------------------------------------
     if "user_menu" not in p and "user_menu" not in sess:
-        msg = "ברוך הבא לגמח משניות רייזמן להשאלה, משתמש רשום בנדרים פלוס הקש 1, משתמש מזדמן הקש 2, להשארת הודעה לגמח הקש 3"
+        msg = "ברוך הבא לגמח משניות רייזמן להשאלה. פרטי משתמש: משתמש רשום בנדרים פלוס, הקש 1. משתמש מזדמן, הקש 2. הודעה לגמח, הקש 3"
         return send_yemot_response(yemot_read(msg, "user_menu", 1, 1))
 
     if "user_menu" in p and "user_menu" not in sess:
@@ -135,26 +135,26 @@ async def handle_call(request: Request):
 
     menu_choice = sess.get("user_menu")
 
-    # --- מקש 3: השארת הודעה לגמ"ח ---
+    # --- מקש 3: הודעה לגמ"ח (דף 1) ---
     if menu_choice == "3":
         if "message_audio" not in p:
-            return send_yemot_response(yemot_record_no_menu("הקלט את הודעתך לאחר הצליל ולסיום הקש סולמית", "message_audio"))
+            return send_yemot_response(yemot_record_no_menu("הקלט את הודעתך לאחר הישמע הצליל ולסיום הקש סולמית", "message_audio"))
 
         if "msg_confirm" not in p:
-            return send_yemot_response(yemot_read("לאישור הקישו 1, לתיקון הקישו 2", "msg_confirm", 1, 1))
+            return send_yemot_response(yemot_read("לאישור הקש 1, להקלטה מחודשת הקש 2", "msg_confirm", 1, 1))
 
         if p.get("msg_confirm") == "1":
             audio_path = p.get("message_audio", "")
             download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path=ivr2:{audio_path}"
             send_admin_email(sess.get("caller_phone", ""), download_url)
             
-            # איפוס נתוני השיחה וחזרה לתפריט הראשי ללא ניתוק!
             sessions.pop(call_id, None)
-            return send_yemot_response(yemot_msg("הודעתך נשמרה ונשלחה בהצלחה, תודה", go_to=restart_folder))
+            return send_yemot_response(yemot_msg("הודעתך נשמרה ונשלחה בהצלחה, תודה ולהתראות", go_to=restart_folder))
         else:
-            return send_yemot_response(yemot_record_no_menu("הקלט שוב את הודעתך לאחר הצליל ולסיום הקש סולמית", "message_audio"))
+            # הקלטה מחודשת
+            return send_yemot_response(yemot_record_no_menu("הקלט את הודעתך לאחר הישמע הצליל ולסיום הקש סולמית", "message_audio"))
 
-    # --- מקש 1: נדרים פלוס ---
+    # --- מקש 1: משתמש רשום בנדרים פלוס (דף 1) ---
     if menu_choice == "1":
         if "id_num" not in p:
             return send_yemot_response(yemot_read("הקש את מספר הזהות ולאחריו הקש סולמית", "id_num", 9, 8, 10))
@@ -183,13 +183,13 @@ async def handle_call(request: Request):
             else:
                 sess.pop("id_num", None)
                 sess.pop("nedarim_pass", None)
-                return send_yemot_response(yemot_read("הפרטים אינם תואמים, הקש שוב את מספר הזהות ובסיום סולמית", "id_num", 9, 8, 10))
+                return send_yemot_response(yemot_read("הפרטים אינם תואמים, אנא הקש שוב את מספר הזהות ולאחריו סולמית", "id_num", 9, 8, 10))
 
-    # --- מקש 2: משתמש מזדמן (זיהוי קולי חכם) ---
+    # --- מקש 2: משתמש מזדמן (דף 1 ודף 2) ---
     if menu_choice == "2":
         sess["user_type"] = "מזדמן"
 
-        # שלב א: שם
+        # שלב א: שם פרטי ומשפחה
         if "name_audio" not in p:
             return send_yemot_response(yemot_record_no_menu("אמור בקול ברור את שם פרטי ומשפחה ולאחר מכן הקש סולמית", "name_audio"))
 
@@ -199,14 +199,13 @@ async def handle_call(request: Request):
             transcribed_name = transcribe_yemot_audio(curr_name_audio)
 
             if not transcribed_name:
-                print("🔄 הדיבור לא פוענח - מחזיר להקלטת שם מחדש.")
                 sess.pop("name_text", None)
-                return send_yemot_response(yemot_record_no_menu("הדיבור אינו ברור, אנא אמרו שוב בקול ברור את שם פרטי ומשפחה ולאחר מכן הקש סולמית", "name_audio"))
+                return send_yemot_response(yemot_record_no_menu("הדיבור אינו ברור, אנא אמור שוב בקול ברור את שם פרטי ומשפחה ולאחר מכן הקש סולמית", "name_audio"))
             
             sess["name_text"] = transcribed_name
 
         if "name_confirm" not in p:
-            msg = f"השם שנקלט הוא {sess.get('name_text', '')}, לאישור הקישו 1, לתיקון הקישו 2"
+            msg = f"השם שנקלט הוא {sess.get('name_text', '')}, לאישור הקש 1, להקלטה מחודשת הקש 2"
             return send_yemot_response(yemot_read(msg, "name_confirm", 1, 1))
 
         if p.get("name_confirm") == "2":
@@ -216,13 +215,13 @@ async def handle_call(request: Request):
 
         sess["name"] = sess.get("name_text", "מזדמן")
 
-        # שלב ב: מספר טלפון
+        # שלב ב: מספר טלפון (דף 2)
         if "casual_phone" not in p:
             return send_yemot_response(yemot_read("הקש מספר פלאפון ולאחר מכן הקש סולמית", "casual_phone", 10, 9, 10))
 
         sess["phone"] = p.get("casual_phone")
 
-        # שלב ג: כתובת
+        # שלב ג: כתובת מלאה (דף 2)
         if "address_audio" not in p:
             return send_yemot_response(yemot_record_no_menu("אמור בקול ברור את הכתובת המלאה שלך ולאחר מכן הקש סולמית", "address_audio"))
 
@@ -232,14 +231,13 @@ async def handle_call(request: Request):
             transcribed_addr = transcribe_yemot_audio(curr_addr_audio)
 
             if not transcribed_addr:
-                print("🔄 כתובת לא פוענחה - מחזיר להקלטת כתובת מחדש.")
                 sess.pop("address_text", None)
-                return send_yemot_response(yemot_record_no_menu("הדיבור אינו ברור, אנא אמרו שוב בקול ברור את הכתובת המלאה שלך ולאחר מכן הקש סולמית", "address_audio"))
+                return send_yemot_response(yemot_record_no_menu("הדיבור אינו ברור, אנא אמור שוב בקול ברור את הכתובת המלאה שלך ולאחר מכן הקש סולמית", "address_audio"))
 
             sess["address_text"] = transcribed_addr
 
         if "addr_confirm" not in p:
-            msg = f"הכתובת שנקלטה היא {sess.get('address_text', '')}, לאישור הקישו 1, לתיקון הקישו 2"
+            msg = f"הכתובת שנקלטה היא {sess.get('address_text', '')}, לאישור הקש 1, להקלטה מחודשת הקש 2"
             return send_yemot_response(yemot_read(msg, "addr_confirm", 1, 1))
 
         if p.get("addr_confirm") == "2":
@@ -249,11 +247,11 @@ async def handle_call(request: Request):
 
         sess["address"] = sess.get("address_text", "-")
 
-        # שמירה בשיטס בסיום
+        # שמירה ראשונית של המשתמש בשיטס
         if "casual_saved" not in sess:
             try:
                 requests.get(
-                    f"{SCRIPT_URL}?action=register_casual&name={sess['name']}&phone={sess['phone']}&address={sess['address']}",
+                    f"{SCRIPT_URL}?action=register_casual&name={sess['name']}&phone={sess['phone']}&address={sess['address']}&source=טלפוני",
                     timeout=6
                 )
             except Exception:
@@ -261,7 +259,7 @@ async def handle_call(request: Request):
             sess["casual_saved"] = True
 
     # -------------------------------------------------------------
-    # 2. בחירת משנה
+    # 2. בחירת משנה (דף 2)
     # -------------------------------------------------------------
     if "book_choice" not in p and "book_choice" not in sess:
         msg = "לבחירת משנה דרך המספר הסידורי הקש 1, לפרטים מלאים הקש 2, להסבר על המספר הסידורי הקש 9"
@@ -272,22 +270,23 @@ async def handle_call(request: Request):
 
     b_choice = sess.get("book_choice")
 
+    # מקש 9: הסבר על המספר הסידורי (דף 2)
     if b_choice == "9":
         sess.pop("book_choice", None)
-        msg = "הסבר שימוש, המספר הסידורי מוטבע על גב כרך המשניות, בהקשת מספר זה ניתן לבצע השאלה או החזרה, לבחירה דרך מספר סידורי הקש 1, לפרטים מלאים הקש 2"
+        msg = "הסבר על המספר הסידורי: המספר הסידורי מוטבע על גב כרך המשניות, ובהקשת מספר זה ניתן לבצע השאלה או החזרה. לבחירת משנה דרך המספר הסידורי הקש 1, לפרטים מלאים הקש 2"
         return send_yemot_response(yemot_read(msg, "book_choice", 1, 1))
 
-    # מקש 1: מספר סידורי
+    # מקש 1: דרך המספר הסידורי (דף 2)
     if b_choice == "1":
         if "serial_num" not in p:
             return send_yemot_response(yemot_read("הקש את המספר הסידורי ולאחריו הקש סולמית", "serial_num", 6, 1, 10))
         sess["book_id"] = p.get("serial_num")
         sess["seder_mishna"] = "-"
 
-    # מקש 2: סדר ומסכת
+    # מקש 2: פרטים מלאים - סדר ומסכת (דף 2)
     elif b_choice == "2":
         if "seder_num" not in p and "seder_name" not in sess:
-            msg = "הקש את מספר הסדר, 1 זרעים, 2 מועד, 3 נשים, 4 נזיקין, 5 קדשים, 6 טהרות, ובסיום סולמית"
+            msg = "הקש את מספר הסדר: 1 זרעים, 2 מועד, 3 נשים, 4 נזיקין, 5 קדשים, 6 טהרות, ובסיום סולמית"
             return send_yemot_response(yemot_read(msg, "seder_num", 1, 1))
 
         if "seder_num" in p:
@@ -302,14 +301,13 @@ async def handle_call(request: Request):
             transcribed_mishna = transcribe_yemot_audio(curr_mishna_audio)
 
             if not transcribed_mishna:
-                print("🔄 שם משנה לא פוענח - מחזיר להקלטה מחדש.")
                 sess.pop("mishna_text", None)
-                return send_yemot_response(yemot_record_no_menu("הדיבור אינו ברור, אנא אמרו שוב בקול ברור את שם המשנה ולאחר מכן הקש סולמית", "mishna_audio"))
+                return send_yemot_response(yemot_record_no_menu("הדיבור אינו ברור, אנא אמור שוב בקול ברור את שם המשנה ולאחר מכן הקש סולמית", "mishna_audio"))
 
             sess["mishna_text"] = transcribed_mishna
 
         if "mishna_confirm" not in p:
-            msg = f"שם המשנה שנקלט הוא {sess.get('mishna_text', '')}, לאישור הקישו 1, לתיקון הקישו 2"
+            msg = f"שם המשנה שנקלט הוא {sess.get('mishna_text', '')}, לאישור הקש 1, להקלטה מחודשת הקש 2"
             return send_yemot_response(yemot_read(msg, "mishna_confirm", 1, 1))
 
         if p.get("mishna_confirm") == "2":
@@ -321,7 +319,7 @@ async def handle_call(request: Request):
         sess["seder_mishna"] = f"{sess.get('seder_name', '')} - {sess.get('mishna_text', '')}"
 
     # -------------------------------------------------------------
-    # 3. פעולה: השאלה או החזרה (חזרה לתפריט הראשי בסיום!)
+    # 3. פעולה: השאלה או החזרה (דף 3)
     # -------------------------------------------------------------
     if "action_choice" not in p:
         return send_yemot_response(yemot_read("להשאלת המשנה הקש 1, להחזרת המשנה הקש 2", "action_choice", 1, 1))
@@ -332,32 +330,32 @@ async def handle_call(request: Request):
         try:
             requests.get(
                 f"{SCRIPT_URL}?action=borrow&bookId={sess.get('book_id', '-')}&sederMishna={sess.get('seder_mishna', '-')}"
-                f"&name={sess.get('name', 'משאיל')}&phone={sess.get('phone', '')}&address={sess.get('address', '-')}&userType={sess.get('user_type', 'מזדמן')}",
+                f"&name={sess.get('name', 'משאיל')}&phone={sess.get('phone', '')}&address={sess.get('address', '-')}"
+                f"&userType={sess.get('user_type', 'מזדמן')}&source=טלפוני",
                 timeout=6
             )
         except Exception:
             pass
 
-        # איפוס נתוני הפעולה וחזרה חלקה לתפריט הראשי ללא ניתוק!
         sessions.pop(call_id, None)
-        return send_yemot_response(yemot_msg("העדכון נקלט בהצלחה, תודה", go_to=restart_folder))
+        # דף 3: "העדכון נקלט בהצלחה, תודה ולהתראות"
+        return send_yemot_response(yemot_msg("העדכון נקלט בהצלחה, תודה ולהתראות", go_to=restart_folder))
 
     elif act == "2":
         # ביצוע החזרה
         try:
             res = requests.get(
-                f"{SCRIPT_URL}?action=return&bookId={sess.get('book_id', '-')}&sederMishna={sess.get('seder_mishna', '-')}&phone={sess.get('phone', '')}",
+                f"{SCRIPT_URL}?action=return&bookId={sess.get('book_id', '-')}&sederMishna={sess.get('seder_mishna', '-')}&phone={sess.get('phone', '')}&source=טלפוני",
                 timeout=6
             ).json()
         except Exception:
             res = {"success": True}
 
-        # איפוס נתוני הפעולה וחזרה חלקה לתפריט הראשי ללא ניתוק!
         sessions.pop(call_id, None)
         if res.get("success"):
-            return send_yemot_response(yemot_msg("העדכון נקלט בהצלחה, תודה", go_to=restart_folder))
+            return send_yemot_response(yemot_msg("העדכון נקלט בהצלחה, תודה ולהתראות", go_to=restart_folder))
         else:
-            return send_yemot_response(yemot_msg("לא נמצאה השאלה פעילה מתאימה במערכת, תודה", go_to=restart_folder))
+            return send_yemot_response(yemot_msg("לא נמצאה השאלה פעילה מתאימה במערכת, תודה ולהתראות", go_to=restart_folder))
 
     return send_yemot_response(yemot_msg("תודה ולהתראות"))
 
@@ -373,10 +371,10 @@ def send_admin_email(phone, file_url):
     if not smtp_user or not smtp_pass: return
     try:
         msg = EmailMessage()
-        msg["Subject"] = "פנייה ממערכת ההשאלות"
+        msg["Subject"] = "הודעה חדשה מתא קולי - גמ\"ח משניות"
         msg["From"] = smtp_user
         msg["To"] = admin_mail
-        msg.set_content(f"שלום,\nהתקבלה הודעה חדשה מאת טלפון: {phone}\nקישור להקלטה: {file_url}")
+        msg.set_content(f"שלום,\nהתקבלה הודעה קולית חדשה מאת טלפון: {phone}\nקישור להאזנה להקלטה: {file_url}")
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
             smtp.login(smtp_user, smtp_pass)
             smtp.send_message(msg)
