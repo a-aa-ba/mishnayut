@@ -26,7 +26,7 @@ SEDARIM = {
 }
 
 def log_ivr(call_id: str, message: str):
-    """רישום לוג עברי נקי ומסודר"""
+    """רישום לוג עברי נקי ומסודר לטרמינל"""
     print(f"📞 [שיחה: {call_id}] {message}")
 
 def clean_tts(text: str) -> str:
@@ -37,11 +37,6 @@ def clean_tts(text: str) -> str:
         text = text.replace(ch, " ")
     return " ".join(text.split())
 
-# =========================================================================
-# פונקציית קליטת נתונים לפי התיעוד הרשמי (עמודים 7 ו-10)
-# ערך 6: סוג השמעה (Digits/Number/NO)
-# ערך 15: בקשת אישור M1353 "לאישור הקישו אחת, להקשה מחודשת הקישו שתיים"
-# =========================================================================
 def yemot_read(
     text: str, 
     var_name: str, 
@@ -56,7 +51,6 @@ def yemot_read(
         return f"read=t-{cleaned}={var_name},no,{max_d},{min_d},{timeout},NO,,,,,,,,no"
     
     confirm_val = "yes" if confirm else "no"
-    # בדיוק 15 פרמטרים לפי התיעוד הרשמי
     return f"read=t-{cleaned}={var_name},no,{max_d},{min_d},{timeout},{play_mode},,,,,,,,,{confirm_val}"
 
 def yemot_menu_read(text: str, var_name: str, timeout=5):
@@ -142,14 +136,18 @@ async def handle_call(request: Request):
         return PlainTextResponse("hangup")
 
     if call_id not in sessions:
-        sessions[call_id] = {"caller_phone": p.get("ApiPhone", "")}
+        sessions[call_id] = {
+            "caller_phone": p.get("ApiPhone", ""),
+            "name_attempt": 1,
+            "addr_attempt": 1
+        }
         log_ivr(call_id, f"שיחה חדשה נכנסה ממספר: {p.get('ApiPhone', 'לא ידוע')}")
 
     sess = sessions[call_id]
     restart_folder = get_restart_folder(p)
 
     # -------------------------------------------------------------
-    # 1. תפריט ראשי
+    # 1. תפריט ראשי (ללא בקשת אישור)
     # -------------------------------------------------------------
     user_menu_input = p.get("user_menu", "").strip()
 
@@ -164,28 +162,21 @@ async def handle_call(request: Request):
 
     menu_choice = sess.get("user_menu")
 
-    # --- מקש 3: הודעה לגמ"ח ---
+    # --- מקש 3: השארת הודעה לגמ"ח (הקלטה ישירה ללא אישור) ---
     if menu_choice == "3":
         if "message_audio" not in p:
-            log_ivr(call_id, "המאזין מופנה להקלטת הודעה קולית")
+            log_ivr(call_id, "המאזין מופנה להקלטת הודעה")
             return send_yemot_response(yemot_record_no_menu("הקלט את הודעתך לאחר הישמע הצליל ולסיום הקש סולמית", "message_audio"))
 
-        if "msg_confirm" not in p:
-            log_ivr(call_id, "ההודעה הוקלטה מבקש אישור (1) או הקלטה חוזרת (2)")
-            return send_yemot_response(yemot_read("לאישור הקש 1 להקלטה מחודשת הקש 2", "msg_confirm", 1, 1, 6, play_mode="NO", confirm=False))
+        # ההקלטה הסתיימה - שולח מיד מייל למנהל ומסיים ללא בקשת אישור
+        audio_path = p.get("message_audio", "")
+        log_ivr(call_id, "ההודעה הוקלטה ונשלחת מיד למייל המנהל ללא צורך באישור")
+        download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path=ivr2:{audio_path}"
+        send_admin_email(sess.get("caller_phone", ""), download_url)
+        sessions.pop(call_id, None)
+        return send_yemot_response(yemot_msg("הודעתך נשמרה ונשלחה בהצלחה תודה ולהתראות", go_to=restart_folder))
 
-        if p.get("msg_confirm") == "1":
-            log_ivr(call_id, "המאזין אישר את ההודעה נשלח מייל למנהל הגמ\"ח")
-            audio_path = p.get("message_audio", "")
-            download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path=ivr2:{audio_path}"
-            send_admin_email(sess.get("caller_phone", ""), download_url)
-            sessions.pop(call_id, None)
-            return send_yemot_response(yemot_msg("הודעתך נשמרה ונשלחה בהצלחה תודה ולהתראות", go_to=restart_folder))
-        else:
-            log_ivr(call_id, "המאזין בחר להקליט את ההודעה מחדש")
-            return send_yemot_response(yemot_record_no_menu("הקלט שוב את הודעתך לאחר הישמע הצליל ולסיום הקש סולמית", "message_audio"))
-
-    # --- מקש 1: משתמש רשום (השמעת ת.ז + בקשת אישור M1353) ---
+    # --- מקש 1: משתמש רשום ---
     if menu_choice == "1":
         if "id_num" not in p:
             log_ivr(call_id, "מבקש מהמאזין להקיש תעודת זהות (כולל השמעה ואישור)")
@@ -202,7 +193,7 @@ async def handle_call(request: Request):
         sess["id_num"] = str(p.get("id_num")).strip()
 
         if "user_verified" not in sess:
-            log_ivr(call_id, f"בודק בגיליון תעודת זהות מאושרת: {sess['id_num']}")
+            log_ivr(call_id, f"בודק בגיליון תעודת זהות: {sess['id_num']}")
             try:
                 res = requests.get(
                     f"{SCRIPT_URL}?action=verify_registered&id_number={sess['id_num']}",
@@ -230,13 +221,13 @@ async def handle_call(request: Request):
                     confirm=True
                 ))
 
-    # --- מקש 2: רישום משתמש חדש (ת.ז וטלפון עם השמעה ואישור M1353) ---
+    # --- מקש 2: רישום משתמש חדש ---
     if menu_choice == "2":
         sess["user_type"] = "חדש"
 
-        # שלב 1: ת.ז (השמעה ואישור)
+        # שלב 1: הקשת ת.ז (השמעה ואישור)
         if "reg_id" not in p and "id_num" not in sess:
-            log_ivr(call_id, "רישום חדש - שלב 1: הקשת ת.ז עם השמעה ואישור")
+            log_ivr(call_id, "רישום חדש - שלב 1: הקשת ת.ז")
             return send_yemot_response(yemot_read(
                 "לרישום הקישו את מספר הזהות שלכם בן תשע ספרות ולאחריו סולמית", 
                 "reg_id", 
@@ -247,13 +238,39 @@ async def handle_call(request: Request):
                 confirm=True
             ))
 
+        # בדיקת מניעת כפילות ת.ז
         if "reg_id" in p and "id_num" not in sess:
-            sess["id_num"] = str(p.get("reg_id")).strip()
-            log_ivr(call_id, f"רישום חדש - נקלטה ואושרה תעודת זהות: {sess['id_num']}")
+            entered_id = str(p.get("reg_id")).strip()
+            log_ivr(call_id, f"בודק האם ת.ז {entered_id} כבר רשומה במאגר...")
 
-        # שלב 2: טלפון (השמעה ואישור)
-        if "reg_phone" not in p and "phone" not in sess:
-            log_ivr(call_id, "רישום חדש - שלב 2: הקשת טלפון עם השמעה ואישור")
+            try:
+                check_existing = requests.get(
+                    f"{SCRIPT_URL}?action=verify_registered&id_number={entered_id}",
+                    timeout=6
+                ).json()
+            except Exception:
+                check_existing = {"success": False}
+
+            if check_existing.get("success"):
+                existing_name = check_existing.get("name", "משתמש רשום")
+                log_ivr(call_id, f"ת.ז {entered_id} כבר קיימת עבור: {existing_name}. מעביר ישירות לכרך ללא רישום כפול!")
+                sess["id_num"] = entered_id
+                sess["name"] = existing_name
+                sess["phone"] = check_existing.get("phone", sess.get("caller_phone", ""))
+                sess["user_type"] = "רשום"
+                sess["user_verified"] = True
+                sess["user_saved"] = True
+                
+                # מודיע ומעביר מיידית לבחירת כרך ללא תפריטי ביניים
+                msg = f"מספר זהות זה כבר רשום במערכת שלום ל {existing_name} הנכם מועברים לבחירת כרך"
+                sess["skip_to_book"] = True
+            else:
+                sess["id_num"] = entered_id
+                log_ivr(call_id, f"ת.ז {entered_id} פנויה לרישום חדש.")
+
+        # שלב 2: הקשת טלפון (השמעה ואישור)
+        if "reg_phone" not in p and "phone" not in sess and "id_num" in sess and not sess.get("skip_to_book"):
+            log_ivr(call_id, "רישום חדש - שלב 2: הקשת טלפון")
             return send_yemot_response(yemot_read(
                 "הקישו את מספר הטלפון שלכם ולאחריו סולמית", 
                 "reg_phone", 
@@ -266,72 +283,52 @@ async def handle_call(request: Request):
 
         if "reg_phone" in p and "phone" not in sess:
             sess["phone"] = str(p.get("reg_phone")).strip()
-            log_ivr(call_id, f"רישום חדש - נקלט ואושר טלפון: {sess['phone']}")
+            log_ivr(call_id, f"רישום חדש - נקלט טלפון: {sess['phone']}")
 
-        # שלב 3: הקלטת שם
-        if "reg_name_audio" not in p and "name_approved" not in sess:
-            log_ivr(call_id, "רישום חדש - שלב 3: בקשת הקלטת שם מלא")
-            return send_yemot_response(yemot_record_no_menu("אמרו בקול ברור את שמכם הפרטי ושם המשפחה ולאחר מכן הקשו סולמית", "reg_name_audio"))
+        # שלב 3: הקלטת שם (ללא בקשת אישור - ממשיך ישירות)
+        if "name" not in sess and "phone" in sess and not sess.get("skip_to_book"):
+            n_att = sess["name_attempt"]
+            name_audio_var = f"reg_name_audio_{n_att}"
 
-        curr_name_audio = p.get("reg_name_audio")
-        if curr_name_audio and sess.get("last_name_audio") != curr_name_audio:
-            sess["last_name_audio"] = curr_name_audio
+            if name_audio_var not in p:
+                log_ivr(call_id, f"רישום חדש - בקשת הקלטת שם (ללא אישור)")
+                return send_yemot_response(yemot_record_no_menu("אמרו בקול ברור את שמכם הפרטי ושם המשפחה ולאחר מכן הקשו סולמית", name_audio_var))
+
+            curr_name_audio = p.get(name_audio_var)
             transcribed_name = transcribe_yemot_audio(curr_name_audio, call_id)
 
             if not transcribed_name:
-                log_ivr(call_id, "שם לא זוהה מבקש לחזור שוב")
-                sess.pop("last_name_audio", None)
-                return send_yemot_response(yemot_record_no_menu("הדיבור אינו ברור אנא נסו שנית ואמרו את שמכם המלא ולאחר מכן הקשו סולמית", "reg_name_audio"))
+                sess["name_attempt"] += 1
+                new_n_att = sess["name_attempt"]
+                log_ivr(call_id, "שם לא זוהה - מבקש להקליט שוב")
+                return send_yemot_response(yemot_record_no_menu("הדיבור אינו ברור אנא נסו שנית ואמרו את שמכם המלא ולאחר מכן הקשו סולמית", f"reg_name_audio_{new_n_att}"))
 
             sess["name"] = transcribed_name
+            log_ivr(call_id, f"שם נקלט בהצלחה: '{sess['name']}'. ממשיך ישירות לכתובת ללא אישור.")
 
-        if "reg_name_confirm" not in p and "name_approved" not in sess:
-            log_ivr(call_id, f"מבקש אישור על השם: '{sess.get('name')}'")
-            msg = f"השם שנקלט הוא {sess.get('name', '')} לאישור הקשו 1 להקלטה מחודשת הקשו 2"
-            return send_yemot_response(yemot_read(msg, "reg_name_confirm", 1, 1, 6, play_mode="NO", confirm=False))
+        # שלב 4: הקלטת כתובת (ללא בקשת אישור - ממשיך ישירות)
+        if "address" not in sess and "name" in sess and not sess.get("skip_to_book"):
+            a_att = sess["addr_attempt"]
+            addr_audio_var = f"reg_addr_audio_{a_att}"
 
-        if p.get("reg_name_confirm") == "2":
-            log_ivr(call_id, "המאזין בחר להקליט את השם מחדש")
-            sess.pop("name", None)
-            sess.pop("last_name_audio", None)
-            sess.pop("name_approved", None)
-            return send_yemot_response(yemot_record_no_menu("אמרו שוב בקול ברור את שמכם המלא ולאחר מכן הקשו סולמית", "reg_name_audio"))
+            if addr_audio_var not in p:
+                log_ivr(call_id, f"רישום חדש - בקשת הקלטת כתובת (ללא אישור)")
+                return send_yemot_response(yemot_record_no_menu("אמרו בקול ברור את הכתובת המלאה שלכם ולאחר מכן הקשו סולמית", addr_audio_var))
 
-        sess["name_approved"] = True
-
-        # שלב 4: הקלטת כתובת
-        if "reg_addr_audio" not in p and "addr_approved" not in sess:
-            log_ivr(call_id, "רישום חדש - שלב 4: בקשת הקלטת כתובת")
-            return send_yemot_response(yemot_record_no_menu("אמרו בקול ברור את הכתובת המלאה שלכם ולאחר מכן הקשו סולמית", "reg_addr_audio"))
-
-        curr_addr_audio = p.get("reg_addr_audio")
-        if curr_addr_audio and sess.get("last_addr_audio") != curr_addr_audio:
-            sess["last_addr_audio"] = curr_addr_audio
+            curr_addr_audio = p.get(addr_audio_var)
             transcribed_addr = transcribe_yemot_audio(curr_addr_audio, call_id)
 
             if not transcribed_addr:
-                log_ivr(call_id, "כתובת לא זוהתה מבקש לחזור שוב")
-                sess.pop("last_addr_audio", None)
-                return send_yemot_response(yemot_record_no_menu("הדיבור אינו ברור אנא נסו שנית ואמרו את הכתובת המלאה ולאחר מכן הקשו סולמית", "reg_addr_audio"))
+                sess["addr_attempt"] += 1
+                new_a_att = sess["addr_attempt"]
+                log_ivr(call_id, "כתובת לא זוהתה - מבקש להקליט שוב")
+                return send_yemot_response(yemot_record_no_menu("הדיבור אינו ברור אנא נסו שנית ואמרו את הכתובת המלאה ולאחר מכן הקשו סולמית", f"reg_addr_audio_{new_a_att}"))
 
             sess["address"] = transcribed_addr
+            log_ivr(call_id, f"כתובת נקלטה בהצלחה: '{sess['address']}'. ממשיך ישירות לשמירה ולכרך.")
 
-        if "reg_addr_confirm" not in p and "addr_approved" not in sess:
-            log_ivr(call_id, f"מבקש אישור על הכתובת: '{sess.get('address')}'")
-            msg = f"הכתובת שנקלטה היא {sess.get('address', '')} לאישור הקשו 1 להקלטה מחודשת הקשו 2"
-            return send_yemot_response(yemot_read(msg, "reg_addr_confirm", 1, 1, 6, play_mode="NO", confirm=False))
-
-        if p.get("reg_addr_confirm") == "2":
-            log_ivr(call_id, "המאזין בחר להקליט את הכתובת מחדש")
-            sess.pop("address", None)
-            sess.pop("last_addr_audio", None)
-            sess.pop("addr_approved", None)
-            return send_yemot_response(yemot_record_no_menu("אמרו שוב בקול ברור את הכתובת המלאה ולאחר מכן הקשו סולמית", "reg_addr_audio"))
-
-        sess["addr_approved"] = True
-
-        # שמירת המשתמש בגיליון
-        if "user_saved" not in sess:
+        # שמירת המשתמש החדש בגיליון
+        if "user_saved" not in sess and "address" in sess:
             id_val = sess.get("id_num", "-")
             name_val = sess.get("name", "משתמש חדש")
             phone_val = sess.get("phone", sess.get("caller_phone", ""))
@@ -356,11 +353,14 @@ async def handle_call(request: Request):
             sess["user_saved"] = True
 
     # -------------------------------------------------------------
-    # 2. בחירת כרך (מבנה 6 ספרות)
+    # 2. בחירת כרך (תפריטים ישירים ללא אישור)
     # -------------------------------------------------------------
     if "book_choice" not in p and "book_choice" not in sess:
-        log_ivr(call_id, "השמעת תפריט בחירת כרך: 1 למספר סידורי, 2 לבחירה בשלבים, 9 להסבר")
+        log_ivr(call_id, "השמעת תפריט בחירת כרך: 1 למספר סידורי, 2 לבחירה בשלבים, 9 להסבר (ללא אישור)")
         msg = "לבחירת כרך באמצעות מספר סידורי בן שש ספרות הקש 1 לבחירה בשלבים לפי סניף סדר וכרך הקש 2 להסבר על המספר הסידורי הקש 9"
+        if sess.get("skip_to_book"):
+            msg = f"מספר זהות זה כבר רשום במערכת שלום ל {sess.get('name')} לבחירת כרך במספר סידורי הקש 1 לבחירה בשלבים הקש 2 להסבר הקש 9"
+            sess.pop("skip_to_book", None)
         return send_yemot_response(yemot_read(msg, "book_choice", 1, 1, 6, play_mode="NO", confirm=False))
 
     if "book_choice" in p:
@@ -369,17 +369,17 @@ async def handle_call(request: Request):
 
     b_choice = sess.get("book_choice")
 
-    # מקש 9: הסבר נקי וחלק
+    # מקש 9: הסבר
     if b_choice == "9":
         log_ivr(call_id, "השמעת הסבר מלא על מבנה 6 הספרות")
         sess.pop("book_choice", None)
         msg = "הסבר על המספר הסידורי המספר מורכב משש ספרות שלוש הספרות הראשונות הן מספר הסניף הספרה הרביעית היא מספר הסדר מאחת עד שש ושתי הספרות האחרונות הן מספר הכרך לבחירה במספר סידורי בן שש ספרות הקש אחת לבחירה בשלבים הקש שתיים"
         return send_yemot_response(yemot_read(msg, "book_choice", 1, 1, 8, play_mode="NO", confirm=False))
 
-    # מקש 1: הקשה ישירה של 6 ספרות (עם השמעה ואישור M1353)
+    # מקש 1: הקשה ישירה של 6 ספרות (עם השמעה ואישור על הספרות בלבד)
     if b_choice == "1":
         if "serial_num" not in p:
-            log_ivr(call_id, "מבקש מהמאזין להקיש את המספר הסידורי בן 6 הספרות (כולל השמעה ואישור)")
+            log_ivr(call_id, "מבקש מהמאזין להקיש את המספר הסידורי בן 6 הספרות")
             return send_yemot_response(yemot_read(
                 "אנא הקישו את המספר הסידורי בן שש הספרות ולאחריו סולמית", 
                 "serial_num", 
@@ -398,13 +398,13 @@ async def handle_call(request: Request):
 
         sess["book_id"] = raw_num
         sess["seder_mishna"] = f"סניף {branch} - סדר {seder_name} - כרך {volume}"
-        log_ivr(call_id, f"נקלט ואושר מספר סידורי: {raw_num} | פוענח: סניף {branch}, סדר {seder_name}, כרך {volume}")
+        log_ivr(call_id, f"נקלט ואושר מספר סידורי: {raw_num} | {sess['seder_mishna']}")
 
-    # מקש 2: בחירה ב-3 שלבים (עם השמעה ואישור)
+    # מקש 2: בחירה ב-3 שלבים
     elif b_choice == "2":
-        # שלב א: סניף (3 ספרות עם השמעה ואישור)
+        # שלב א: סניף (השמעה ואישור על ה-3 ספרות)
         if "step_branch" not in p and "step_branch" not in sess:
-            log_ivr(call_id, "בחירה בשלבים - שלב א: בקשת מספר סניף (עם השמעה ואישור)")
+            log_ivr(call_id, "בחירה בשלבים - שלב א: בקשת מספר סניף")
             return send_yemot_response(yemot_read(
                 "הקישו את מספר הסניף בן שלוש ספרות ולאחריו סולמית", 
                 "step_branch", 
@@ -417,22 +417,22 @@ async def handle_call(request: Request):
 
         if "step_branch" in p:
             sess["step_branch"] = p.get("step_branch")
-            log_ivr(call_id, f"בחירה בשלבים - נקלט ואושר סניף: {sess['step_branch']}")
+            log_ivr(call_id, f"נקלט סניף: {sess['step_branch']}")
 
-        # שלב ב: סדר (בחירה פשוטה ומהירה 1-6)
+        # שלב ב: סדר (בחירה ישירה 1-6 ללא אישור)
         if "step_seder" not in p and "step_seder" not in sess:
-            log_ivr(call_id, "בחירה בשלבים - שלב ב: בקשת בחירת סדר")
+            log_ivr(call_id, "בחירה בשלבים - שלב ב: בקשת בחירת סדר (ללא אישור)")
             msg = "הקישו את מספר הסדר 1 זרעים 2 מועד 3 נשים 4 נזיקין 5 קדשים 6 טהרות ולאחריו סולמית"
             return send_yemot_response(yemot_read(msg, "step_seder", 1, 1, 8, play_mode="NO", confirm=False))
 
         if "step_seder" in p:
             sess["step_seder"] = p.get("step_seder")
             s_name = SEDARIM.get(sess["step_seder"], sess["step_seder"])
-            log_ivr(call_id, f"בחירה בשלבים - נבחר סדר: {sess['step_seder']} ({s_name})")
+            log_ivr(call_id, f"נבחר סדר: {sess['step_seder']} ({s_name})")
 
-        # שלב ג: כרך (2 ספרות עם השמעה ואישור)
+        # שלב ג: כרך (השמעה ואישור על ה-2 ספרות)
         if "step_vol" not in p and "step_vol" not in sess:
-            log_ivr(call_id, "בחירה בשלבים - שלב ג: בקשת מספר כרך (עם השמעה ואישור)")
+            log_ivr(call_id, "בחירה בשלבים - שלב ג: בקשת מספר כרך")
             return send_yemot_response(yemot_read(
                 "הקישו את מספר הכרך בן שתי ספרות ולאחריו סולמית", 
                 "step_vol", 
@@ -445,7 +445,7 @@ async def handle_call(request: Request):
 
         if "step_vol" in p:
             sess["step_vol"] = p.get("step_vol")
-            log_ivr(call_id, f"בחירה בשלבים - נקלט ואושר כרך: {sess['step_vol']}")
+            log_ivr(call_id, f"נקלט כרך: {sess['step_vol']}")
 
         full_branch = str(sess.get("step_branch", "000")).zfill(3)
         seder_digit = str(sess.get("step_seder", "1"))
@@ -458,10 +458,10 @@ async def handle_call(request: Request):
         log_ivr(call_id, f"הורכב מספר סידורי מלא: {full_serial} | {sess['seder_mishna']}")
 
     # -------------------------------------------------------------
-    # 3. פעולה: השאלה או החזרה
+    # 3. פעולה: השאלה או החזרה (ללא אישור - מעבר ישיר)
     # -------------------------------------------------------------
     if "action_choice" not in p:
-        log_ivr(call_id, "מבקש מהמאזין לבחור פעולה: 1 להשאלה, 2 להחזרה")
+        log_ivr(call_id, "מבקש מהמאזין לבחור פעולה: 1 להשאלה, 2 להחזרה (ללא אישור)")
         return send_yemot_response(yemot_read("להשאלת המשנה הקש 1 להחזרת המשנה הקש 2", "action_choice", 1, 1, 6, play_mode="NO", confirm=False))
 
     act = p.get("action_choice")
