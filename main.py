@@ -167,7 +167,7 @@ async def handle_call(request: Request):
 
         if msg_confirm_var not in p:
             # הגדרה בשורה אחת: מקש 1 או 2, 6 שניות, ללא השמעה, ללא אישור
-            return read("לאישור ההקלטה ושליחתה הקש 1 להקלטה מחדש הקש 2", f"{msg_confirm_var},no,1,1,6,NO,,,,1.2,,,,no")
+            return read("לאישור ההקלטה ושליחתה הקש 1 להקלטה מחדש הקש 2", f"{msg_confirm_var},no,1,1,6,NO,,,,1.2,,,,,no")
 
         confirm_choice = p.get(msg_confirm_var)
         if confirm_choice == "1":
