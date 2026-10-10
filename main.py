@@ -288,7 +288,7 @@ async def handle_call(request: Request):
             if addr_confirm_var not in p:
                 t_addr = sess.get(f"temp_addr_{a_att}", "")
                 msg = f"הכתובת שנקלטה היא {t_addr} לאישור הקשו 1 להקלטה מחודשת הקשו 2"
-                return read(msg, f"{addr_confirm_var},no,1,1,6,NO,,,,1.2,,,,no")
+                return read(msg, f"{addr_confirm_var},no,1,1,6,NO,,,,1.2,,,,,no")
 
             addr_choice = p.get(addr_confirm_var)
             if addr_choice == "1":
@@ -328,7 +328,7 @@ async def handle_call(request: Request):
             msg = f"מספר זהות זה כבר רשום במערכת שלום ל {sess.get('name')} לבחירת כרך במספר סידורי הקש 1 לבחירה בשלבים הקש 2 להסבר הקש 9"
             sess.pop("skip_to_book", None)
 
-        return read(msg, "book_choice,no,1,1,6,NO,,,,1.2.9,,,,no")
+        return read(msg, "book_choice,no,1,1,6,NO,,,,1.2.9,,,,,no")
 
     if "book_choice" in p:
         sess["book_choice"] = p.get("book_choice")
@@ -338,7 +338,7 @@ async def handle_call(request: Request):
     if b_choice == "9":
         sess.pop("book_choice", None)
         msg = "הסבר על המספר הסידורי המספר מורכב משש ספרות שלוש הספרות הראשונות הן מספר הסניף הספרה הרביעית היא מספר הסדר מאחת עד שש ושתי הספרות האחרונות הן מספר הכרך לבחירה במספר סידורי בן שש ספרות הקש אחת לבחירה בשלבים הקש שתיים"
-        return read(msg, "book_choice,no,1,1,8,NO,,,,1.2,,,,no")
+        return read(msg, "book_choice,no,1,1,8,NO,,,,1.2,,,,,no")
 
     # מקש 1: מספר סידורי בן 6 ספרות
     if b_choice == "1":
@@ -363,8 +363,8 @@ async def handle_call(request: Request):
             sess["step_branch"] = p.get("step_branch")
 
         if "step_seder" not in p and "step_seder" not in sess:
-            msg = "הקישו את מספר הסדר 1 זרעים 2 מועד 3 נשים 4 נזיקין 5 קדשים 6 טהרות ולאחריו סולמית"
-            return read(msg, "step_seder,no,1,1,8,NO,,,,1.2.3.4.5.6,,,,no")
+            msg = "הקישו את מספר הסדר. 1 זרעים 2 מועד 3 נשים 4 נזיקין 5 קדשים 6 טהרות "
+            return read(msg, "step_seder,no,1,1,8,NO,,,,1.2.3.4.5.6,,,,,no")
 
         if "step_seder" in p:
             sess["step_seder"] = p.get("step_seder")
@@ -386,7 +386,7 @@ async def handle_call(request: Request):
 
     # --- תפריט השאלה / החזרה ---
     if "action_choice" not in p:
-        return read("להשאלת המשנה הקש 1 להחזרת המשנה הקש 2", "action_choice,no,1,1,6,NO,,,,1.2,,,,no")
+        return read("להשאלת המשנה הקש 1 להחזרת המשנה הקש 2", "action_choice,no,1,1,6,NO,,,,1.2,,,,,no")
 
     act = p.get("action_choice")
 
